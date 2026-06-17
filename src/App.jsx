@@ -20,11 +20,13 @@ function App() {
   const [error, setError] = useState(null);
   const [fileName, setFileName] = useState("");
 
-  const upload = async (file) => {
-    if (!file) return;
-    setFileName(file.name); setLoading(true); setError(null); setData(null);
+  const upload = async (files) => {
+    if (!files || files.length === 0) return;
+    setFileName(files.length === 1 ? files[0].name : `${files.length} files`);
+    setLoading(true); setError(null); setData(null);
     try {
-      const form = new FormData(); form.append("file", file);
+      const form = new FormData();
+      for (const f of files) form.append("files", f);
       const res = await fetch(API + "/api/generate", { method: "POST", body: form });
       if (!res.ok) throw new Error("Server returned " + res.status + (res.status === 503 ? " — Gemini is busy, try again in a moment." : ""));
       const d = await res.json();
@@ -44,7 +46,7 @@ function App() {
           <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-6">
             <label className="block">
               <span className="text-sm text-zinc-400">Upload a PowerPoint (.pptx)</span>
-              <input type="file" accept=".pptx" disabled={loading} onChange={(e) => upload(e.target.files[0])}
+              <input type="file" accept=".pptx" multiple disabled={loading} onChange={(e) => upload(e.target.files)}
                 className="mt-3 block w-full text-sm text-zinc-400 file:mr-3 file:py-2 file:px-4 file:rounded-md file:border-0 file:bg-amber-400 file:text-zinc-950 file:font-medium hover:file:bg-amber-300 file:cursor-pointer" />
             </label>
             {loading && <div className="mt-5 text-sm font-mono text-amber-300">Building study set from &ldquo;{fileName}&rdquo;&hellip;<div className="text-xs text-zinc-600 mt-1">First request can take ~50s while the server wakes.</div></div>}
