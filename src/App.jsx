@@ -39,7 +39,7 @@ function App() {
   return (
     <div className="min-h-screen text-zinc-200 px-4 py-6">
       <div className="max-w-2xl mx-auto">
-        <div className="font-mono text-lg text-zinc-100 mb-1">OS439 <span className="text-amber-400">//</span> <span className="text-zinc-400">drill</span></div>
+        <div className="font-mono text-lg text-zinc-100 mb-1">DRILL <span className="text-amber-400">//</span> <span className="text-zinc-400">AI Study Engine</span></div>
         <div className="text-xs text-zinc-600 font-mono mb-6">upload a .pptx &rarr; AI builds your study set</div>
 
         {!data && (
