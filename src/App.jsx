@@ -160,103 +160,23 @@ function Learn({ questions }) {
 
 /* ---------- FLASHCARDS ---------- */
 function Flashcards({ cards }) {
-  const [started, setStarted] = useState(false);
-  const [queue, setQueue] = useState([]);
+  const [i, setI] = useState(0);
   const [flip, setFlip] = useState(false);
-  const [mastered, setMastered] = useState(0);
-
-  if (cards.length === 0) {
-    return <div className="text-center text-zinc-500 text-sm font-mono py-16 border border-dashed border-zinc-800 rounded-xl">No flashcards in this set.</div>;
-  }
-
-  const startSession = (size) => {
-    const order = [...cards.keys()].sort(() => Math.random() - 0.5).slice(0, size);
-    setQueue(order);
-    setMastered(0);
-    setFlip(false);
-    setStarted(true);
-  };
-
-  if (!started) {
-    const sizes = [10, 20, 30].filter((n) => n < cards.length);
-    return (
-      <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-6">
-        <div className="text-sm text-zinc-400 mb-1">{cards.length} cards in this deck</div>
-        <div className="text-xs text-zinc-600 font-mono mb-5">study in focused batches instead of the whole deck at once</div>
-        <div className="flex gap-2 flex-wrap">
-          {sizes.map((n) => (
-            <button key={n} onClick={() => startSession(n)}
-              className="px-4 py-2 rounded-md bg-zinc-800 border border-zinc-700 text-zinc-200 text-sm font-mono hover:border-amber-400/60 hover:text-amber-300 transition">
-              {n} cards
-            </button>
-          ))}
-          <button onClick={() => startSession(cards.length)}
-            className="px-4 py-2 rounded-md bg-zinc-800 border border-zinc-700 text-zinc-200 text-sm font-mono hover:border-amber-400/60 hover:text-amber-300 transition">
-            all {cards.length}
-          </button>
-        </div>
-      </div>
-    );
-  }
-
-  if (queue.length === 0) {
-    return (
-      <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/5 p-8 text-center">
-        <div className="text-2xl text-emerald-300 font-mono mb-2">session cleared</div>
-        <div className="text-sm text-zinc-400 mb-5">{mastered} marked as known</div>
-        <button onClick={() => setStarted(false)} className="px-5 py-2.5 rounded-md bg-amber-400 text-zinc-950 font-medium text-sm">new session</button>
-      </div>
-    );
-  }
-
-  const c = cards[queue[0]];
-  const total = mastered + queue.length;
-  const progress = total > 0 ? Math.round((mastered / total) * 100) : 0;
-
-  const gotIt = () => { setMastered((m) => m + 1); setQueue((q) => q.slice(1)); setFlip(false); };
-  const stillLearning = () => { setQueue((q) => [...q.slice(1), q[0]]); setFlip(false); };
-
+  if (cards.length === 0) return <div className="text-center text-zinc-500 text-sm font-mono py-16 border border-dashed border-zinc-800 rounded-xl">No flashcards in this set.</div>;
+  const c = cards[i];
+  const go = (d) => { setI((p) => (p + d + cards.length) % cards.length); setFlip(false); };
   return (
     <div>
-      <div className="flex items-center justify-between mb-2 text-xs font-mono">
-        <span className="text-zinc-500">{queue.length} left</span>
-        <span className="text-emerald-400">{mastered} known</span>
-      </div>
-      <div className="h-1.5 rounded-full bg-zinc-800 overflow-hidden mb-4">
-        <div className="h-full bg-emerald-400 transition-all duration-300" style={{ width: `${progress}%` }} />
-      </div>
-
-      <div style={{ perspective: "1200px" }}>
-        <div
-          onClick={() => setFlip((f) => !f)}
-          className="relative w-full min-h-[220px] cursor-pointer"
-          style={{
-            transformStyle: "preserve-3d",
-            transition: "transform 0.45s cubic-bezier(0.4, 0.2, 0.2, 1)",
-            transform: flip ? "rotateY(180deg)" : "rotateY(0deg)",
-          }}
-        >
-          <div
-            className="absolute inset-0 rounded-xl border border-zinc-800 bg-zinc-900 p-6 flex flex-col justify-center hover:border-amber-400/40 transition-colors"
-            style={{ backfaceVisibility: "hidden" }}
-          >
-            <div className="text-[10px] font-mono uppercase tracking-widest text-amber-400/70 mb-3">term</div>
-            <div className="text-xl text-zinc-100 font-medium leading-snug">{c.front}</div>
-            <div className="text-xs text-zinc-600 mt-5 font-mono">tap to flip &rarr;</div>
-          </div>
-          <div
-            className="absolute inset-0 rounded-xl border border-emerald-500/30 bg-zinc-900 p-6 flex flex-col justify-center"
-            style={{ backfaceVisibility: "hidden", transform: "rotateY(180deg)" }}
-          >
-            <div className="text-[10px] font-mono uppercase tracking-widest text-emerald-400/70 mb-3">definition</div>
-            <div className="text-[15px] text-zinc-300 leading-relaxed">{c.back}</div>
-          </div>
-        </div>
-      </div>
-
-      <div className="grid grid-cols-2 gap-3 mt-4">
-        <button onClick={stillLearning} className="py-3 rounded-md bg-zinc-900 border border-zinc-700 text-zinc-300 text-sm font-mono hover:border-red-500/50 hover:text-red-300 transition">still learning</button>
-        <button onClick={gotIt} className="py-3 rounded-md bg-zinc-900 border border-zinc-700 text-zinc-300 text-sm font-mono hover:border-emerald-500/50 hover:text-emerald-300 transition">got it</button>
+      <div className="text-xs font-mono text-zinc-500 mb-3">Card {i + 1} / {cards.length}</div>
+      <button onClick={() => setFlip((f) => !f)} className="w-full text-left rounded-xl border border-zinc-800 bg-zinc-900 p-6 min-h-[200px] flex flex-col justify-center hover:border-zinc-700 transition">
+        <div className="text-[10px] font-mono uppercase tracking-widest text-zinc-600 mb-3">{flip ? "definition" : "term"}</div>
+        <div className={flip ? "text-[15px] text-zinc-300 leading-relaxed" : "text-xl text-zinc-100 font-medium"}>{flip ? c.back : c.front}</div>
+        {!flip && <div className="text-xs text-zinc-600 mt-5 font-mono">tap to flip &rarr;</div>}
+      </button>
+      <div className="flex items-center justify-between mt-4">
+        <button onClick={() => go(-1)} className="px-4 py-2 rounded-md bg-zinc-900 border border-zinc-800 text-zinc-300 text-sm hover:border-zinc-600">&larr; Prev</button>
+        <button onClick={() => setFlip((f) => !f)} className="px-4 py-2 rounded-md bg-zinc-800 border border-zinc-700 text-zinc-200 text-sm">Flip</button>
+        <button onClick={() => go(1)} className="px-4 py-2 rounded-md bg-zinc-900 border border-zinc-800 text-zinc-300 text-sm hover:border-zinc-600">Next &rarr;</button>
       </div>
     </div>
   );
