@@ -13,6 +13,24 @@ function isCorrect(q, ans) {
 }
 const TYPE_LABEL = { mc: "multiple choice", tf: "true / false", fill: "fill in the blank" };
 
+// Gemini doesn't always return the exact "mc" / "tf" / "fill" enum we expect —
+// sometimes it sends human-readable variants like "Fill In Blank" or "True or False".
+// Normalize on ingest so the rest of the app can rely on a strict 3-value type.
+const TYPE_MAP = {
+  mc: "mc", multiplechoice: "mc",
+  tf: "tf", truefalse: "tf",
+  fill: "fill", fillintheblank: "fill", fillinblank: "fill", fillintheblanks: "fill",
+};
+function normalizeType(t) {
+  const key = (t || "").toLowerCase().replace(/[^a-z]/g, "");
+  const mapped = TYPE_MAP[key];
+  if (!mapped) {
+    console.warn(`Unrecognized question type "${t}" — defaulting to "mc". Check the backend/Gemini schema.`);
+    return "mc";
+  }
+  return mapped;
+}
+
 function App() {
   const [data, setData] = useState(null); // { flashcards, questions }
   const [mode, setMode] = useState("learn");
@@ -31,6 +49,7 @@ function App() {
       if (!res.ok) throw new Error("Server returned " + res.status + (res.status === 503 ? " — Gemini is busy, try again in a moment." : ""));
       const d = await res.json();
       if (!d || !Array.isArray(d.questions) || d.questions.length === 0) throw new Error("No questions came back.");
+      d.questions = d.questions.map((q) => ({ ...q, type: normalizeType(q.type) }));
       setData(d); setMode("learn");
     } catch (e) { setError(e.message); }
     finally { setLoading(false); }
