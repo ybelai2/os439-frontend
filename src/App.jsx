@@ -1,272 +1,155 @@
-import { useState } from "react";
+import { useEffect, useState } from 'react';
+import { api, getToken, setToken } from './api';
+import Study from './Study';
 
-const API = "https://drillapi.onrender.com";
-
-const norm = (s) => (s || "").trim().toLowerCase().replace(/[.\s]+$/, "");
-function isCorrect(q, ans) {
-  if (q.type === "fill") {
-    if (ans == null) return false;
-    const a = norm(ans), b = norm(q.answerText);
-    return a.length > 0 && (a === b || (b.length > 3 && b.includes(a) && a.length >= 3));
+export default function App() {
+  const [user, setUser] = useState(null);
+  const [checking, setChecking] = useState(!!getToken());
+  const [authError, setAuthError] = useState('');
+  const [theme, setTheme] = useState(() => localStorage.getItem('drill-theme') || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'));
+  useEffect(() => { document.documentElement.dataset.theme = theme; localStorage.setItem('drill-theme', theme); }, [theme]);
+  useEffect(() => {
+    let active = true;
+    const expired = () => { setUser(null); setAuthError('Your session ended. Please sign in again.'); };
+    window.addEventListener('drill-session-expired', expired);
+    if (getToken()) api('/api/auth/me').then(u => { if (active) setUser(u); }).catch(e => { if (active) setAuthError(e.message); }).finally(() => { if (active) setChecking(false); });
+    return () => { active = false; window.removeEventListener('drill-session-expired', expired); };
+  }, []);
+  async function logout() {
+    try { await api('/api/auth/logout', { method: 'POST' }); setToken(null); setUser(null); }
+    catch (e) { setAuthError(e.message); }
   }
-  return ans === q.answerIndex;
+  return <div className="app-shell">
+    <header className="topbar"><a className="brand" href="/">drill<span>✳</span></a><span className="tagline">A little practice. A deeper understanding.</span>
+      <div className="header-actions"><button className="quiet" onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')} aria-label={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`}>{theme === 'dark' ? '☀ Light' : '☾ Dark'}</button>
+        {user && <><span className="user-name">{user.name}</span><button className="quiet" onClick={logout}>Sign out</button></>}</div></header>
+    {authError && <div className="notice" role="alert">{authError}<button onClick={() => setAuthError('')} aria-label="Dismiss message">×</button></div>}
+    {checking ? <p className="empty" role="status">Opening your workspace…</p> : user ? <Workspace key={user.id} /> : <Auth onSuccess={session => { setToken(session.token); setUser(session.user); setAuthError(''); }} />}
+    <footer>DRILL / YOUR STUDY WORKSPACE <span>Built for the next “I get it.”</span></footer>
+  </div>;
 }
-const TYPE_LABEL = { mc: "multiple choice", tf: "true / false", fill: "fill in the blank" };
 
-// Gemini doesn't always return the exact "mc" / "tf" / "fill" enum we expect —
-// sometimes it sends human-readable variants like "Fill In Blank" or "True or False".
-// Normalize on ingest so the rest of the app can rely on a strict 3-value type.
-const TYPE_MAP = {
-  mc: "mc", multiplechoice: "mc",
-  tf: "tf", truefalse: "tf",
-  fill: "fill", fillintheblank: "fill", fillinblank: "fill", fillintheblanks: "fill",
-};
-function normalizeType(t) {
-  const key = (t || "").toLowerCase().replace(/[^a-z]/g, "");
-  const mapped = TYPE_MAP[key];
-  if (!mapped) {
-    console.warn(`Unrecognized question type "${t}" — defaulting to "mc". Check the backend/Gemini schema.`);
-    return "mc";
+function Auth({ onSuccess }) {
+  const [signup, setSignup] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  async function submit(event) {
+    event.preventDefault(); setBusy(true); setError('');
+    const values = Object.fromEntries(new FormData(event.currentTarget));
+    try { onSuccess(await api(`/api/auth/${signup ? 'signup' : 'login'}`, { method: 'POST', body: values })); }
+    catch (e) { setError(e.message); } finally { setBusy(false); }
   }
-  return mapped;
+  return <main className="auth-layout"><section className="intro"><p className="eyebrow">LESS SCATTER. MORE RECALL.</p><h1>Make knowledge<br /><em>stick.</em></h1><p>Your courses, class notes, and study decks.<br />One calm place to come back to.</p><div className="intro-steps"><span>01 / Organize your classes</span><span>02 / Turn slides into practice</span><span>03 / Return. Recall. Repeat.</span></div></section>
+    <section className="panel auth-panel"><p className="eyebrow">YOUR NEXT STUDY SESSION STARTS HERE</p><h2>{signup ? 'Create your account' : 'Welcome back'}</h2><p className="muted">{signup ? 'Keep your learning in one place.' : 'Pick up where you left your materials.'}</p>
+      <form onSubmit={submit}><fieldset disabled={busy}>{signup && <label>Your name<input name="name" autoComplete="name" required maxLength={80} /></label>}
+        <label>Email<input name="email" type="email" autoComplete="email" required maxLength={254} /></label>
+        <label>Password<input name="password" type="password" autoComplete={signup ? 'new-password' : 'current-password'} required minLength={signup ? 12 : undefined} maxLength={72} /></label>
+        {signup && <small className="muted">Use at least 12 characters.</small>}
+        {error && <p className="error" role="alert">{error}</p>}<button className="primary full" type="submit">{busy ? 'Please wait…' : signup ? 'Create account →' : 'Sign in →'}</button></fieldset></form>
+      <button className="text-button" disabled={busy} onClick={() => { setSignup(!signup); setError(''); }}>{signup ? 'Already have an account? Sign in' : 'New to Drill? Create an account'}</button>
+    </section></main>;
 }
 
-function App() {
-  const [data, setData] = useState(null); // { flashcards, questions }
-  const [mode, setMode] = useState("learn");
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState(null);
-  const [fileName, setFileName] = useState("");
-
-  const upload = async (files) => {
-    if (!files || files.length === 0) return;
-    setFileName(files.length === 1 ? files[0].name : `${files.length} files`);
-    setLoading(true); setError(null); setData(null);
-    try {
-      const form = new FormData();
-      for (const f of files) form.append("files", f);
-      const res = await fetch(API + "/api/generate", { method: "POST", body: form });
-      if (!res.ok) throw new Error("Server returned " + res.status + (res.status === 503 ? " — Gemini is busy, try again in a moment." : ""));
-      const d = await res.json();
-      if (!d || !Array.isArray(d.questions) || d.questions.length === 0) throw new Error("No questions came back.");
-      d.questions = d.questions.map((q) => ({ ...q, type: normalizeType(q.type) }));
-      setData(d); setMode("learn");
-    } catch (e) { setError(e.message); }
-    finally { setLoading(false); }
-  };
-
-  return (
-    <div className="min-h-screen text-zinc-200 px-4 py-6">
-      <div className="max-w-2xl mx-auto">
-        <div className="font-mono text-lg text-zinc-100 mb-1">DRILL <span className="text-amber-400">//</span> <span className="text-zinc-400">AI Study Engine</span></div>
-        <div className="text-xs text-zinc-600 font-mono mb-6">upload a .pptx &rarr; AI builds your study set</div>
-
-        {!data && (
-          <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-6">
-            <label className="block">
-              <span className="text-sm text-zinc-400">Upload a PowerPoint (.pptx)</span>
-              <input type="file" accept=".pptx" multiple disabled={loading} onChange={(e) => upload(e.target.files)}
-                className="mt-3 block w-full text-sm text-zinc-400 file:mr-3 file:py-2 file:px-4 file:rounded-md file:border-0 file:bg-amber-400 file:text-zinc-950 file:font-medium hover:file:bg-amber-300 file:cursor-pointer" />
-            </label>
-            {loading && <div className="mt-5 text-sm font-mono text-amber-300">Building study set from &ldquo;{fileName}&rdquo;&hellip;<div className="text-xs text-zinc-600 mt-1">First request can take ~50s while the server wakes.</div></div>}
-            {error && <div className="mt-5 text-sm font-mono text-red-400 border border-red-500/30 bg-red-500/5 rounded-md px-3 py-2">{error}</div>}
-          </div>
-        )}
-
-        {data && (
-          <div>
-            <div className="flex items-center justify-between mb-5">
-              <div className="flex gap-1 bg-zinc-900 border border-zinc-800 rounded-lg p-1">
-                {[["learn", "Learn"], ["cards", "Flashcards"], ["test", "Test"]].map(([k, l]) => (
-                  <button key={k} onClick={() => setMode(k)}
-                    className={"px-3.5 py-1.5 rounded-md text-sm font-mono transition " + (mode === k ? "bg-zinc-800 text-amber-300" : "text-zinc-500 hover:text-zinc-300")}>{l}</button>
-                ))}
-              </div>
-              <button onClick={() => { setData(null); setFileName(""); }} className="text-xs font-mono text-zinc-600 hover:text-zinc-300">new deck</button>
-            </div>
-            {mode === "learn" && <Learn questions={data.questions} />}
-            {mode === "cards" && <Flashcards cards={data.flashcards || []} />}
-            {mode === "test" && <Test questions={data.questions} />}
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-/* ---------- shared rendering ---------- */
-function TypeBadge({ t }) {
-  return <span className="text-[10px] font-mono px-1.5 py-0.5 rounded border border-zinc-700 bg-zinc-800/40 text-zinc-400">{TYPE_LABEL[t] || t}</span>;
-}
-
-function Choices({ q, selected, onSelect, locked, reveal }) {
-  return (
-    <div className="space-y-2">
-      {q.options.map((opt, idx) => {
-        let cls = "border-zinc-800 bg-zinc-950 text-zinc-300 hover:border-zinc-600";
-        if (reveal) {
-          if (idx === q.answerIndex) cls = "border-emerald-500/60 bg-emerald-500/10 text-emerald-200";
-          else if (idx === selected) cls = "border-red-500/60 bg-red-500/10 text-red-200";
-          else cls = "border-zinc-800 bg-zinc-950 text-zinc-600";
-        } else if (selected === idx) { cls = "border-amber-400/60 bg-amber-400/10 text-amber-100"; }
-        return (
-          <button key={idx} onClick={() => !locked && onSelect(idx)} disabled={locked}
-            className={"w-full text-left px-4 py-2.5 rounded-lg border text-sm font-mono transition " + cls}>
-            <span className="text-zinc-600 mr-2">{String.fromCharCode(65 + idx)}.</span>{opt}
-          </button>
-        );
-      })}
-    </div>
-  );
-}
-
-function FillInput({ value, onChange, locked, reveal, q }) {
-  const ok = reveal && isCorrect(q, value);
-  return (
-    <div>
-      <input type="text" value={value || ""} disabled={locked}
-        onChange={(e) => onChange(e.target.value)}
-        placeholder="type your answer"
-        className={"w-full px-4 py-2.5 rounded-lg border text-sm font-mono bg-zinc-950 outline-none " +
-          (reveal ? (ok ? "border-emerald-500/60 text-emerald-200" : "border-red-500/60 text-red-200") : "border-zinc-800 text-zinc-200 focus:border-amber-400/60")} />
-      {reveal && !ok && <div className="mt-2 text-xs font-mono text-emerald-300">answer: {q.answerText}</div>}
-    </div>
-  );
-}
-
-/* ---------- LEARN (immediate feedback) ---------- */
-function Learn({ questions }) {
-  const [i, setI] = useState(0);
-  const [ans, setAns] = useState(null);
-  const [submitted, setSubmitted] = useState(false);
-  const [score, setScore] = useState({ right: 0, done: 0 });
-  const q = questions[i];
-
-  const submit = () => {
-    if (submitted) return;
-    const correct = isCorrect(q, ans);
-    setSubmitted(true);
-    setScore((s) => ({ right: s.right + (correct ? 1 : 0), done: s.done + 1 }));
-  };
-  const next = () => { setAns(null); setSubmitted(false); setI((p) => (p + 1) % questions.length); };
-  const canSubmit = q.type === "fill" ? (ans && ans.trim()) : ans != null;
-
-  return (
-    <div>
-      <div className="flex items-center justify-between mb-3 text-xs font-mono">
-        <span className="text-zinc-500">Q {i + 1} / {questions.length}</span>
-        <span className="text-zinc-400">Score <span className="text-emerald-400">{score.right}</span>/{score.done}</span>
-      </div>
-      <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-5">
-        <div className="mb-3"><TypeBadge t={q.type} /></div>
-        <div className="text-[15px] text-zinc-100 mb-4 leading-relaxed">{q.question}</div>
-        {q.type === "fill"
-          ? <FillInput q={q} value={ans} onChange={(v) => !submitted && setAns(v)} locked={submitted} reveal={submitted} />
-          : <Choices q={q} selected={ans} onSelect={(idx) => !submitted && setAns(idx)} locked={submitted} reveal={submitted} />}
-        {submitted && (
-          <div className="mt-4 p-3 rounded-lg bg-zinc-950 border border-zinc-800">
-            <div className={"text-xs font-mono mb-1 " + (isCorrect(q, ans) ? "text-emerald-400" : "text-red-400")}>{isCorrect(q, ans) ? "\u2713 Correct" : "\u2717 Incorrect"}</div>
-            <div className="text-sm text-zinc-400 leading-relaxed">{q.explanation}</div>
-          </div>
-        )}
-      </div>
-      {!submitted
-        ? <button onClick={submit} disabled={!canSubmit} className="mt-4 w-full px-4 py-2.5 rounded-md bg-amber-400 text-zinc-950 font-medium text-sm disabled:opacity-30 disabled:cursor-not-allowed">Check</button>
-        : <button onClick={next} className="mt-4 w-full px-4 py-2.5 rounded-md bg-zinc-800 border border-zinc-700 text-zinc-100 text-sm hover:bg-zinc-700">Next \u2192</button>}
-    </div>
-  );
-}
-
-/* ---------- FLASHCARDS ---------- */
-function Flashcards({ cards }) {
-  const [i, setI] = useState(0);
-  const [flip, setFlip] = useState(false);
-  if (cards.length === 0) return <div className="text-center text-zinc-500 text-sm font-mono py-16 border border-dashed border-zinc-800 rounded-xl">No flashcards in this set.</div>;
-  const c = cards[i];
-  const go = (d) => { setI((p) => (p + d + cards.length) % cards.length); setFlip(false); };
-  return (
-    <div>
-      <div className="text-xs font-mono text-zinc-500 mb-3">Card {i + 1} / {cards.length}</div>
-      <button onClick={() => setFlip((f) => !f)} className="w-full text-left rounded-xl border border-zinc-800 bg-zinc-900 p-6 min-h-[200px] flex flex-col justify-center hover:border-zinc-700 transition">
-        <div className="text-[10px] font-mono uppercase tracking-widest text-zinc-600 mb-3">{flip ? "definition" : "term"}</div>
-        <div className={flip ? "text-[15px] text-zinc-300 leading-relaxed" : "text-xl text-zinc-100 font-medium"}>{flip ? c.back : c.front}</div>
-        {!flip && <div className="text-xs text-zinc-600 mt-5 font-mono">tap to flip &rarr;</div>}
-      </button>
-      <div className="flex items-center justify-between mt-4">
-        <button onClick={() => go(-1)} className="px-4 py-2 rounded-md bg-zinc-900 border border-zinc-800 text-zinc-300 text-sm hover:border-zinc-600">&larr; Prev</button>
-        <button onClick={() => setFlip((f) => !f)} className="px-4 py-2 rounded-md bg-zinc-800 border border-zinc-700 text-zinc-200 text-sm">Flip</button>
-        <button onClick={() => go(1)} className="px-4 py-2 rounded-md bg-zinc-900 border border-zinc-800 text-zinc-300 text-sm hover:border-zinc-600">Next &rarr;</button>
-      </div>
-    </div>
-  );
-}
-
-/* ---------- TEST (no feedback until submit) ---------- */
-function Test({ questions }) {
-  const [answers, setAnswers] = useState({});
-  const [cur, setCur] = useState(0);
-  const [done, setDone] = useState(false);
-  const q = questions[cur];
-  const set = (v) => setAnswers((a) => ({ ...a, [cur]: v }));
-
-  if (done) {
-    let right = 0; questions.forEach((qq, idx) => { if (isCorrect(qq, answers[idx])) right++; });
-    const pct = Math.round((right / questions.length) * 100);
-    return (
-      <div>
-        <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-6 text-center mb-4">
-          <div className={"text-5xl font-mono mb-2 " + (pct >= 80 ? "text-emerald-400" : pct >= 60 ? "text-amber-300" : "text-red-400")}>{pct}%</div>
-          <div className="text-zinc-500 text-sm">{right} / {questions.length} correct</div>
-        </div>
-        <div className="text-xs font-mono uppercase tracking-widest text-zinc-600 mb-2">review</div>
-        <div className="space-y-3">
-          {questions.map((qq, idx) => {
-            const ok = isCorrect(qq, answers[idx]);
-            const given = qq.type === "fill" ? (answers[idx] || "\u2014") : (answers[idx] != null ? qq.options[answers[idx]] : "\u2014");
-            const correct = qq.type === "fill" ? qq.answerText : qq.options[qq.answerIndex];
-            return (
-              <div key={idx} className="rounded-lg border border-zinc-800 bg-zinc-900 p-4">
-                <div className="flex gap-2 items-center mb-2"><span className={"text-xs font-mono " + (ok ? "text-emerald-400" : "text-red-400")}>{ok ? "\u2713" : "\u2717"}</span><TypeBadge t={qq.type} /></div>
-                <div className="text-sm text-zinc-200 mb-2">{qq.question}</div>
-                <div className="text-xs font-mono text-zinc-400">your answer: {given}</div>
-                {!ok && <div className="text-xs font-mono text-emerald-300 mt-0.5">correct: {correct}</div>}
-                <div className="text-xs text-zinc-500 leading-relaxed mt-1">{qq.explanation}</div>
-              </div>
-            );
-          })}
-        </div>
-        <button onClick={() => { setDone(false); setAnswers({}); setCur(0); }} className="mt-5 w-full py-3 rounded-md bg-zinc-800 border border-zinc-700 text-zinc-100 text-sm hover:bg-zinc-700">Retake</button>
-      </div>
-    );
+function Workspace() {
+  const [courses, setCourses] = useState([]);
+  const [classes, setClasses] = useState([]);
+  const [decks, setDecks] = useState([]);
+  const [course, setCourse] = useState(null);
+  const [lesson, setLesson] = useState(null);
+  const [deck, setDeck] = useState(null);
+  const [revision, setRevision] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const [editor, setEditor] = useState(null);
+  const [search, setSearch] = useState('');
+  const classPath = course ? `/api/courses/${course.id}/classes` : '';
+  const deckPath = lesson ? `${classPath}/${lesson.id}/decks` : '';
+  useEffect(() => {
+    const abort = new AbortController();
+    const path = lesson ? `/api/courses/${course.id}/classes/${lesson.id}/decks` : course ? `/api/courses/${course.id}/classes` : '/api/courses';
+    api(path, { signal: abort.signal }).then(items => {
+      if (lesson) setDecks(items); else if (course) setClasses(items); else setCourses(items);
+    }).catch(e => { if (e.name !== 'AbortError') setError(e.message); }).finally(() => { if (!abort.signal.aborted) setLoading(false); });
+    return () => abort.abort();
+  }, [course, lesson, revision]);
+  function navigate(nextCourse, nextLesson = null) { setCourse(nextCourse); setLesson(nextLesson); setDeck(null); setSearch(''); setLoading(true); setError(''); }
+  async function perform(action) {
+    setBusy(true); setError('');
+    try { await action(); return true; } catch (e) { setError(e.message); return false; } finally { setBusy(false); }
   }
-
-  return (
-    <div>
-      <div className="flex items-center justify-between mb-3 text-xs font-mono">
-        <span className="text-zinc-500">Q {cur + 1} / {questions.length}</span>
-        <span className="text-zinc-500">{Object.keys(answers).length} answered</span>
-      </div>
-      <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-5">
-        <div className="mb-3"><TypeBadge t={q.type} /></div>
-        <div className="text-[15px] text-zinc-100 mb-4 leading-relaxed">{q.question}</div>
-        {q.type === "fill"
-          ? <FillInput q={q} value={answers[cur]} onChange={set} locked={false} reveal={false} />
-          : <Choices q={q} selected={answers[cur]} onSelect={set} locked={false} reveal={false} />}
-      </div>
-      <div className="flex items-center justify-between mt-4 gap-2">
-        <button onClick={() => setCur((c) => Math.max(0, c - 1))} disabled={cur === 0} className="px-4 py-2 rounded-md bg-zinc-900 border border-zinc-800 text-zinc-300 text-sm disabled:opacity-40">&larr; Prev</button>
-        {cur < questions.length - 1
-          ? <button onClick={() => setCur((c) => c + 1)} className="px-4 py-2 rounded-md bg-zinc-800 border border-zinc-700 text-zinc-100 text-sm">Next &rarr;</button>
-          : <button onClick={() => setDone(true)} className="px-5 py-2 rounded-md bg-emerald-500 text-zinc-950 font-medium text-sm hover:bg-emerald-400">Submit</button>}
-      </div>
-      <div className="mt-5 flex flex-wrap gap-1.5">
-        {questions.map((_, idx) => (
-          <button key={idx} onClick={() => setCur(idx)}
-            className={"w-7 h-7 rounded text-[11px] font-mono border " + (idx === cur ? "border-amber-400 text-amber-300" : answers[idx] != null ? "border-zinc-600 bg-zinc-800 text-zinc-300" : "border-zinc-800 text-zinc-600")}>{idx + 1}</button>
-        ))}
-      </div>
-    </div>
-  );
+  async function remove(kind, item) {
+    const suffix = kind === 'course' ? ' and all its classes and decks' : kind === 'class' ? ' and all its decks' : '';
+    if (!confirm(`Delete “${item.title}”${suffix}? This cannot be undone.`)) return;
+    await perform(async () => {
+      await api(`${kind === 'course' ? '/api/courses' : kind === 'class' ? classPath : deckPath}/${item.id}`, { method: 'DELETE' });
+      setLoading(true); setRevision(r => r + 1); if (deck?.id === item.id) setDeck(null);
+    });
+  }
+  async function save(values) {
+    const { kind, item } = editor;
+    const base = kind === 'course' ? '/api/courses' : kind === 'class' ? classPath : deckPath;
+    let body = values;
+    if (kind === 'class') body = { ...values, studied: values.studied === 'on' };
+    const ok = await perform(async () => {
+      const saved = await api(base + (item ? `/${item.id}` : ''), { method: item ? 'PUT' : 'POST', body });
+      if (deck?.id === saved.id) setDeck(saved);
+      setLoading(true); setRevision(r => r + 1);
+    });
+    if (ok) setEditor(null);
+  }
+  async function generate(event) {
+    event.preventDefault(); const form = event.currentTarget; const data = new FormData(form);
+    const files = data.getAll('files');
+    if (files.length > 10 || files.some(f => f.size > 20 * 1024 * 1024) || files.reduce((n, f) => n + f.size, 0) > 50 * 1024 * 1024) { setError('Choose up to 10 files, 20 MB each, 50 MB total.'); return; }
+    await perform(async () => {
+      const saved = await api(`${classPath}/${lesson.id}/generate`, { method: 'POST', body: data });
+      setDecks(items => [...items, saved]); setDeck(saved); form.reset();
+    });
+  }
+  const kind = lesson ? 'deck' : course ? 'class' : 'course';
+  const items = (lesson ? decks : course ? classes : courses).filter(i => `${i.title} ${i.code || ''} ${i.semester || ''}`.toLowerCase().includes(search.toLowerCase()));
+  return <main className="workspace"><nav className="breadcrumbs" aria-label="Breadcrumb"><button disabled={busy} onClick={() => navigate(null)}>My courses</button>{course && <><span>/</span><button disabled={busy} onClick={() => navigate(course)}>{course.code || course.title}</button></>}{lesson && <><span>/</span><button disabled={busy} onClick={() => { setDeck(null); }}>{lesson.title}</button></>}</nav>
+    <div className="page-heading"><div><p className="eyebrow">{lesson ? 'YOUR STUDY MATERIALS' : course ? course.semester || 'COURSE WORKSPACE' : 'YOUR LEARNING, ORGANIZED'}</p><h1>{deck ? deck.title : lesson ? lesson.title : course ? course.title : 'My courses'}</h1><p className="muted">{lesson ? lesson.notes || 'Create a study deck from your lecture slides.' : course ? course.description || 'Give each lecture its own space.' : 'A home for everything you’re learning.'}</p></div>
+      {!lesson && <button className="primary" disabled={busy} onClick={() => setEditor({ kind })}>+ Add {kind}</button>}</div>
+    {error && <div className="notice error" role="alert">{error}<button onClick={() => setError('')} aria-label="Dismiss error">×</button></div>}
+    <fieldset disabled={busy} className="workspace-content">
+    {deck ? <><div className="deck-toolbar"><button onClick={() => setDeck(null)}>← All study decks</button><button onClick={() => setEditor({ kind: 'deck', item: deck })}>Edit deck</button></div><Study key={deck.id + deck.content} content={deck.content} /></> : <>
+    {lesson && <form className="panel upload-panel" onSubmit={generate}><div><p className="eyebrow">FROM SLIDES TO STUDY SESSION</p><h2>Build a new deck</h2><p className="muted">AI-generated flashcards and questions, saved to this class.</p></div><label>Deck title<input name="title" required maxLength={160} placeholder="e.g. Lecture 03 — Memory management" /></label><label>PowerPoint slides<input name="files" type="file" accept=".pptx" multiple required /></label><small className="muted">Up to 10 files · 20 MB each · 50 MB total</small><button className="primary" type="submit">{busy ? 'Generating and saving…' : 'Generate study deck ↗'}</button>{busy && <p role="status">This can take several minutes. Keep this page open.</p>}</form>}
+    <div className="list-heading"><h2>{lesson ? 'Saved decks' : course ? 'Classes & lectures' : 'Course library'}</h2><input type="search" aria-label={`Search ${kind}s`} placeholder={`Search ${kind === 'class' ? 'classes' : kind + 's'}…`} value={search} onChange={e => setSearch(e.target.value)} /></div>
+    {loading ? <p className="empty" role="status">Loading your library…</p> : items.length === 0 ? <div className="empty panel"><span className="empty-symbol">✳</span><h2>{search ? 'No matches' : `Your first ${kind} starts here`}</h2><p className="muted">{search ? 'Try another search.' : lesson ? 'Upload slides above to generate a deck you can revisit.' : `Add a ${kind} to start organizing your studies.`}</p></div> : <div className="card-grid">{items.map((item, index) => <article className="panel library-card" key={item.id}><div className="card-top"><span className="card-index">{String(index + 1).padStart(2, '0')}</span><span className="badge">{kind === 'course' ? item.semester || 'Course' : kind === 'class' ? item.studied ? 'Studied ✓' : 'To study' : 'Study deck'}</span></div><button className="card-open" onClick={() => kind === 'course' ? navigate(item) : kind === 'class' ? navigate(course, item) : setDeck(item)}>{item.code && <small>{item.code}</small>}<h3>{item.title}</h3><p>{kind === 'course' ? item.description || 'Open course →' : kind === 'class' ? item.notes || 'Open class →' : 'Learn, review flashcards, or take a test →'}</p></button><div className="card-actions"><button onClick={() => setEditor({ kind, item })}>Edit</button><button className="danger" onClick={() => remove(kind, item)}>Delete</button>{kind === 'class' && <button className="status-button" onClick={() => perform(async () => { await api(`${classPath}/${item.id}`, { method: 'PUT', body: { title: item.title, notes: item.notes, studied: !item.studied } }); setLoading(true); setRevision(r => r + 1); })}>{item.studied ? 'Mark to study' : 'Mark studied'}</button>}</div></article>)}</div>}
+    </>}
+    </fieldset>
+    {editor && <Editor key={editor.item?.id || editor.kind} editor={editor} busy={busy} error={error} onSave={save} onClose={() => setEditor(null)} />}
+  </main>;
 }
 
-export default App;
+function Editor({ editor: { kind, item }, busy, error, onSave, onClose }) {
+  useEffect(() => {
+    const dialog = document.getElementById('record-editor'); dialog.showModal();
+    return () => dialog.close();
+  }, []);
+  return <dialog id="record-editor" aria-labelledby="editor-heading" onCancel={event => { event.preventDefault(); if (!busy) onClose(); }}><form onSubmit={event => { event.preventDefault(); onSave(Object.fromEntries(new FormData(event.currentTarget))); }}><fieldset disabled={busy}><div className="dialog-heading"><h2 id="editor-heading">{item ? 'Edit' : 'Add'} {kind}</h2><button type="button" onClick={onClose} aria-label="Close editor">×</button></div>
+    <label>Title<input name="title" required maxLength={160} defaultValue={item?.title || ''} autoFocus /></label>
+    {kind === 'course' && <><label>Course code<input name="code" maxLength={40} defaultValue={item?.code || ''} placeholder="COSC 350" /></label><label>Semester<input name="semester" maxLength={80} defaultValue={item?.semester || ''} placeholder="Fall 2026" /></label><label>Description<textarea name="description" maxLength={2000} defaultValue={item?.description || ''} /></label></>}
+    {kind === 'class' && <><label>Class notes<textarea name="notes" maxLength={10000} defaultValue={item?.notes || ''} /></label><label className="check"><input type="checkbox" name="studied" defaultChecked={item?.studied || false} />I’ve studied this class</label></>}
+    {kind === 'deck' && <DeckFields content={item.content} />}
+    {error && <p className="error" role="alert">{error}</p>}<div className="dialog-actions"><button type="button" onClick={onClose}>Cancel</button><button className="primary" type="submit">{busy ? 'Saving…' : 'Save changes'}</button></div></fieldset></form></dialog>;
+}
+
+function DeckFields({ content }) {
+  const [data, setData] = useState(() => JSON.parse(content));
+  function change(group, index, field, value) {
+    setData(current => ({ ...current, [group]: current[group].map((entry, i) => i === index ? { ...entry, [field]: value } : entry) }));
+  }
+  return <div className="deck-fields"><input type="hidden" name="content" value={JSON.stringify(data)} />
+    <h3>Flashcards</h3>{data.flashcards.map((card, i) => <details key={i}><summary>Card {i + 1}: {card.front}</summary>
+      <label>Question<textarea required value={card.front} onChange={e => change('flashcards', i, 'front', e.target.value)} /></label>
+      <label>Answer<textarea required value={card.back} onChange={e => change('flashcards', i, 'back', e.target.value)} /></label></details>)}
+    <h3>Questions</h3>{data.questions.map((question, i) => <details key={i}><summary>Question {i + 1}: {question.question}</summary>
+      <label>Question<textarea required value={question.question} onChange={e => change('questions', i, 'question', e.target.value)} /></label>
+      {question.options.map((option, j) => <label key={j}>Option {j + 1}<input required value={option} onChange={e => change('questions', i, 'options', question.options.map((text, k) => j === k ? e.target.value : text))} /></label>)}
+      {question.options.length ? <label>Correct option number<input type="number" min="1" max={question.options.length} required value={question.answerIndex + 1} onChange={e => change('questions', i, 'answerIndex', Number(e.target.value) - 1)} /></label> : <label>Correct answer<input required value={question.answerText} onChange={e => change('questions', i, 'answerText', e.target.value)} /></label>}
+      <label>Explanation<textarea required value={question.explanation} onChange={e => change('questions', i, 'explanation', e.target.value)} /></label></details>)}
+  </div>;
+}
